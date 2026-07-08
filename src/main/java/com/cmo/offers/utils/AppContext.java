@@ -9,7 +9,9 @@ import com.cmo.offers.dao.OfferRefDAO;
 import com.cmo.offers.dao.OfferTreeDAO;
 import com.cmo.offers.dao.PlantDAO;
 import com.cmo.offers.dao.UserDAO;
+import com.cmo.offers.export.service.OfferJsonService;
 import com.cmo.offers.service.AuthService;
+import com.cmo.offers.service.OfferFileStateService;
 import com.cmo.offers.ui.service.MPService;
 import com.cmo.offers.ui.service.OfferService;
 import com.cmo.offers.ui.service.RawMaterialService;
@@ -37,9 +39,9 @@ public class AppContext {
     public final RawMaterialService rawMaterialService;
     public final OfferService offerService;
     public final AuthService authService;
-
     
     public final ReferenceWindowManager windowManager; 
+    public final OfferFileStateService fileStateService;
     
     public AppContext() {
 
@@ -84,6 +86,11 @@ public class AppContext {
     	        materialDAO,
     	        marketPriceDAO,
     	        rawMaterialService
+    	);
+    	
+    	this.fileStateService = new OfferFileStateService(
+    			offerRefDAO,
+    			new OfferJsonService()
     	);
         
     }

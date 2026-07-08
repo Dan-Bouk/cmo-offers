@@ -63,7 +63,7 @@ public class ReferenceWindowManager {
             return;
         }
 
-        OfferEntity offer = offerService.getOfferById(referenceId);
+        OfferEntity offer = offerService.getOfferById(selected.getOfferId());
 
         ClientEntity client = clientDAO.findById(offer.getClientId()).orElse(null);
         PlantEntity plant = null;

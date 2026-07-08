@@ -105,6 +105,7 @@ public class HomePage extends BorderPane {
                     ctx.rawMaterialService,
                     ctx.offerRefDAO,
                     ctx.windowManager,
+                    ctx.fileStateService,
                     this::openNewOfferForm
             );
         }

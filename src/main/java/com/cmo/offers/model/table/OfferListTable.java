@@ -31,10 +31,7 @@ import javafx.util.StringConverter;
 import javafx.util.converter.DefaultStringConverter;
 
 import java.io.File;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,11 +50,10 @@ import com.cmo.offers.export.service.OfferExcelExportService;
 import com.cmo.offers.export.service.OfferExportService;
 import com.cmo.offers.export.service.OfferJsonService;
 import com.cmo.offers.load.service.OfferImportService;
-import com.cmo.offers.model.OfferBundle;
-import com.cmo.offers.model.OfferExportModel;
-import com.cmo.offers.model.ReferenceExportModel;
+
 import com.cmo.offers.model.row.OfferRefJoinRow;
 import com.cmo.offers.model.row.OfferTreeRow;
+import com.cmo.offers.service.OfferFileStateService;
 import com.cmo.offers.ui.service.MPService;
 import com.cmo.offers.ui.service.OfferService;
 import com.cmo.offers.ui.service.RawMaterialService;
@@ -81,6 +77,7 @@ public class OfferListTable extends BorderPane {
     private final RawMaterialService rawMaterialService;
     private final OfferRefDAO offerRefDAO;
     private final ReferenceWindowManager windowManager;
+    private final OfferFileStateService fileStateService;
     private final Runnable onNewOffer;
 
     private final OfferExportService offerExportService;
@@ -106,6 +103,7 @@ public class OfferListTable extends BorderPane {
             RawMaterialService rawMaterialService,
             OfferRefDAO offerRefDAO,
             ReferenceWindowManager windowManager,
+            OfferFileStateService fileStateService,
             Runnable onNewOffer
     ) {
         this.offerService = offerService;
@@ -117,6 +115,7 @@ public class OfferListTable extends BorderPane {
         this.rawMaterialService = rawMaterialService;
         this.offerRefDAO = offerRefDAO;
         this.windowManager = windowManager;
+        this.fileStateService = fileStateService;
         this.onNewOffer = onNewOffer;    
         
         MPService mpService = new MPService(materialDAO, marketPriceDAO, clientMarkupDAO);
@@ -539,7 +538,7 @@ public class OfferListTable extends BorderPane {
             row.setCustomerName(updatedCustomerName);
 
             try {
-                persistOfferHeaderToAllReferenceStateFiles(updatedOffer, updatedCustomerName);
+                fileStateService.persistOfferHeaderToAllReferenceStateFiles(updatedOffer, updatedCustomerName);
             } catch (Exception ex) {
                 showError("Failed to update saved reference files", ex);
             }
@@ -815,7 +814,7 @@ public class OfferListTable extends BorderPane {
                 @Override
                 protected OfferEntity call() throws Exception {
                     OfferEntity duplicatedOffer = offerService.duplicateOffer(row.getOfferId());
-                    copyReferenceStateFiles(row.getOfferId(), duplicatedOffer.getId());
+                    fileStateService.copyReferenceStateFiles(row.getOfferId(), duplicatedOffer.getId());
                     return duplicatedOffer;
                 }
             };
@@ -853,7 +852,7 @@ public class OfferListTable extends BorderPane {
                 @Override
                 protected Void call() throws Exception {
                     windowManager.closeOfferWindows(row.getOfferId());
-                    deleteReferenceStateFiles(row.getOfferId());
+                    fileStateService.deleteReferenceStateFiles(row.getOfferId());
                     offerService.deleteOffer(row.getOfferId());
                     return null;
                 }
@@ -905,7 +904,7 @@ public class OfferListTable extends BorderPane {
         }
 
         try {
-            persistOfferHeaderToAllReferenceStateFiles(
+            fileStateService.persistOfferHeaderToAllReferenceStateFiles(
                     updatedOffer,
                     updatedCustomerName);
         } catch (Exception ex) {
@@ -919,137 +918,6 @@ public class OfferListTable extends BorderPane {
         );
     }
     
-    private void persistOfferHeaderToAllReferenceStateFiles(OfferEntity updatedOffer, String updatedCustomerName) throws Exception {
-        if (updatedOffer == null) {
-            return;
-        }
-
-        List<OfferRefEntity> refs = offerRefDAO.findByOfferId(updatedOffer.getId());
-        for (OfferRefEntity ref : refs) {
-            updateSingleReferenceStateFile(updatedOffer, ref, updatedCustomerName);
-        }
-    }
-    
-    private void updateSingleReferenceStateFile(OfferEntity updatedOffer, OfferRefEntity ref, String updatedCustomerName) throws Exception {
-        if (updatedOffer == null || ref == null) {
-            return;
-        }
-
-        File file = getReferenceStateFile(ref.getId(), updatedOffer.getId(), ref.getDoc());
-        if (!file.exists()) {
-            return;
-        }
-
-        OfferBundle bundle = offerJsonService.read(file);
-        if (bundle == null) {
-            return;
-        }
-
-        OfferExportModel offerDto = bundle.getOffer();
-        if (offerDto == null) {
-            offerDto = new OfferExportModel();
-            bundle.setOffer(offerDto);
-        }
-
-        offerDto.setOfferNr(updatedOffer.getOfferNr());
-        offerDto.setOfferDate(updatedOffer.getOfferDate());
-        offerDto.setRevision(updatedOffer.getRevision());
-        offerDto.setRequest(updatedOffer.getRequestNr());
-        offerDto.setCustomer(updatedCustomerName);
-
-        if (bundle.getReferences() != null) {
-            for (ReferenceExportModel reference : bundle.getReferences()) {
-                if (reference == null || reference.getGeneralInfo() == null) {
-                    continue;
-                }
-
-                reference.getGeneralInfo().setOfferNr(updatedOffer.getOfferNr());
-                reference.getGeneralInfo().setOfferDate(updatedOffer.getOfferDate());
-                reference.getGeneralInfo().setRevision(updatedOffer.getRevision());
-                reference.getGeneralInfo().setRequestNr(updatedOffer.getRequestNr());
-
-                if (updatedCustomerName != null && !updatedCustomerName.isBlank()) {
-                    reference.getGeneralInfo().setCustomerName(updatedCustomerName);
-                }
-            }
-        }
-
-        offerJsonService.write(file, bundle);
-    }
-
-    private void copyReferenceStateFiles(int sourceOfferId, int targetOfferId) throws Exception {
-        List<OfferRefEntity> sourceRefs = offerRefDAO.findByOfferId(sourceOfferId);
-        List<OfferRefEntity> targetRefs = offerRefDAO.findByOfferId(targetOfferId);
-
-        Map<String, Integer> targetRefIdsByDoc = new HashMap<>();
-        for (OfferRefEntity ref : targetRefs) {
-            targetRefIdsByDoc.put(ref.getDoc(), ref.getId());
-        }
-
-        File stateDir = getReferenceStateDirectory();
-        if (!stateDir.exists()) {
-            return;
-        }
-
-        for (OfferRefEntity sourceRef : sourceRefs) {
-            Integer targetRefId = targetRefIdsByDoc.get(sourceRef.getDoc());
-            if (targetRefId == null) {
-                continue;
-            }
-
-            File sourceFile = getReferenceStateFile(sourceRef.getId(), sourceOfferId, sourceRef.getDoc());
-            if (!sourceFile.exists()) {
-                continue;
-            }
-
-            File targetFile = getReferenceStateFile(targetRefId, targetOfferId, sourceRef.getDoc());
-            File parent = targetFile.getParentFile();
-            if (parent != null && !parent.exists()) {
-                parent.mkdirs();
-            }
-
-            Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        }
-    }
-
-    private void deleteReferenceStateFiles(int offerId) throws Exception {
-        for (OfferRefEntity ref : offerRefDAO.findByOfferId(offerId)) {
-            File stateFile = getReferenceStateFile(ref.getId(), offerId, ref.getDoc());
-            Files.deleteIfExists(stateFile.toPath());
-        }
-    }
-
-    
-
-    private File getReferenceStateDirectory() {
-        return new File(System.getProperty("user.home"), ".cmooffers/reference-state");
-    }
-
-    private File getReferenceStateFile(Integer refId, int offerId, String doc) {
-        File dir = getReferenceStateDirectory();
-        String safeDoc = sanitizeFileName(doc == null || doc.isBlank() ? "reference" : doc);
-
-        if (refId != null && refId > 0) {
-            return new File(dir, "ref_" + refId + "_" + safeDoc + ".json");
-        }
-
-        return new File(dir, "offer_" + offerId + "_" + safeDoc + ".json");
-    }
-
-    private String sanitizeFileName(String value) {
-        return value.replaceAll("[^a-zA-Z0-9._-]", "_");
-    }
-
-    
-
-
-
-    
-
-
-
-    
-
     private void saveReferenceAsync(int offerId, String referenceName) {
         Task<Void> task = new Task<>() {
             @Override
