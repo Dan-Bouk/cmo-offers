@@ -41,25 +41,25 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class OfferExcelExportService {
+	
+	private static final String EXCEL_TEMPLATE_RESOURCE = "/Preventivo.xlsx";
 
-	private final String templateResourcePath;
 	private final ClientDAO clientDAO;
 	private final PlantDAO plantDAO;
 	private final MPService mpService;
 
 	public OfferExcelExportService(
-	        String templateResourcePath,
 	        ClientDAO clientDAO,
 	        PlantDAO plantDAO,
 	        MPService mpService
 	) {
-	    this.templateResourcePath = templateResourcePath;
 	    this.clientDAO = clientDAO;
 	    this.plantDAO = plantDAO;
 	    this.mpService = mpService;
 	}
 
 	public void exportOffer(OfferBundle bundle, File outputFile) throws IOException {
+		
         if (bundle == null) {
             throw new IllegalArgumentException("bundle is null");
         }
@@ -67,9 +67,9 @@ public class OfferExcelExportService {
             throw new IllegalArgumentException("bundle.offer is null");
         }
 
-        try (InputStream is = getClass().getResourceAsStream(templateResourcePath)) {
+        try (InputStream is = getClass().getResourceAsStream(EXCEL_TEMPLATE_RESOURCE)) {
             if (is == null) {
-                throw new IllegalStateException("Excel template not found in resources: " + templateResourcePath);
+                throw new IllegalStateException("Excel template not found in resources: " + EXCEL_TEMPLATE_RESOURCE);
             }
 
             try (Workbook workbook = new XSSFWorkbook(is)) {

@@ -46,22 +46,18 @@ import com.cmo.offers.dao.PlantDAO;
 import com.cmo.offers.entity.ClientEntity;
 import com.cmo.offers.entity.OfferEntity;
 import com.cmo.offers.entity.OfferRefEntity;
-import com.cmo.offers.export.service.OfferExcelExportService;
 import com.cmo.offers.export.service.OfferExportService;
-import com.cmo.offers.export.service.OfferJsonService;
 import com.cmo.offers.load.service.OfferImportService;
 
 import com.cmo.offers.model.row.OfferRefJoinRow;
 import com.cmo.offers.model.row.OfferTreeRow;
 import com.cmo.offers.service.OfferFileStateService;
-import com.cmo.offers.ui.service.MPService;
 import com.cmo.offers.ui.service.OfferService;
 import com.cmo.offers.ui.service.RawMaterialService;
 import com.cmo.offers.ui.window.ReferenceWindowManager;
 
 public class OfferListTable extends BorderPane {
 
-	private static final String EXCEL_TEMPLATE_RESOURCE = "/Preventivo.xlsx";
 	
     private final OfferService offerService;
     private final ClientDAO clientDAO;
@@ -80,11 +76,8 @@ public class OfferListTable extends BorderPane {
     private final OfferFileStateService fileStateService;
     private final Runnable onNewOffer;
 
-    private final OfferExportService offerExportService;
-    private final OfferImportService offerImportService;
-    private final OfferJsonService offerJsonService = new OfferJsonService();
-
-    private OfferExcelExportService offerExcelExportService;
+    private final OfferExportService exportService;
+    private final OfferImportService importService;
     
     private final ComboBox<ClientEntity> clientFilter = new ComboBox<>();
     private final Button refreshBtn = new Button("Refresh");
@@ -102,6 +95,8 @@ public class OfferListTable extends BorderPane {
             MarketPriceDAO marketPriceDAO,
             RawMaterialService rawMaterialService,
             OfferRefDAO offerRefDAO,
+            OfferExportService exportService,
+            OfferImportService importService,
             ReferenceWindowManager windowManager,
             OfferFileStateService fileStateService,
             Runnable onNewOffer
@@ -114,37 +109,11 @@ public class OfferListTable extends BorderPane {
         this.marketPriceDAO = marketPriceDAO;
         this.rawMaterialService = rawMaterialService;
         this.offerRefDAO = offerRefDAO;
+        this.exportService = exportService;
+        this.importService = importService;
         this.windowManager = windowManager;
         this.fileStateService = fileStateService;
         this.onNewOffer = onNewOffer;    
-        
-        MPService mpService = new MPService(materialDAO, marketPriceDAO, clientMarkupDAO);
-
-        this.offerExcelExportService = new OfferExcelExportService(
-                EXCEL_TEMPLATE_RESOURCE,
-                clientDAO,
-                plantDAO,
-                mpService
-        );
-
-        this.offerExportService = new OfferExportService(
-        	    offerService,
-        	    offerRefDAO,
-        	    clientDAO,
-        	    offerJsonService,
-        	    offerExcelExportService
-        	);
-
-        this.offerImportService = new OfferImportService(
-                new OfferJsonService(),
-                offerService,
-                offerRefDAO,
-                clientDAO,
-                plantDAO,
-                materialDAO,
-                marketPriceDAO,
-                rawMaterialService
-        );
 
         setPadding(new Insets(10));
         setTop(buildTopBar());
@@ -714,7 +683,7 @@ public class OfferListTable extends BorderPane {
         Task<Void> task = new Task<>() {
             @Override
             protected Void call() throws Exception {
-                offerExportService.exportOfferToJson(row.getOfferId(), selectedFile, getOwningStage());
+                exportService.exportOfferToJson(row.getOfferId(), selectedFile, getOwningStage());
                 return null;
             }
         };
@@ -747,7 +716,7 @@ public class OfferListTable extends BorderPane {
         Task<Void> task = new Task<>() {
             @Override
             protected Void call() throws Exception {
-                offerExportService.exportOfferToExcel(row.getOfferId(), selectedFile, getOwningStage());
+                exportService.exportOfferToExcel(row.getOfferId(), selectedFile, getOwningStage());
                 return null;
             }
         };
@@ -779,7 +748,7 @@ public class OfferListTable extends BorderPane {
         Task<Void> task = new Task<>() {
             @Override
             protected Void call() throws Exception {
-                offerImportService.importOffer(selectedFile, getOwningStage());
+                importService.importOffer(selectedFile, getOwningStage());
                 return null;
             }
         };
@@ -935,9 +904,7 @@ public class OfferListTable extends BorderPane {
         task.setOnFailed(e -> showError("Failed to add reference", task.getException()));
         new Thread(task, "save-reference").start();
     }
-
     
-
     private void styleAlertButtons(Alert alert) {
         DialogPane pane = alert.getDialogPane();
         if (pane.lookupButton(ButtonType.OK) instanceof Button okBtn) {
@@ -946,11 +913,5 @@ public class OfferListTable extends BorderPane {
         if (pane.lookupButton(ButtonType.CANCEL) instanceof Button cancelBtn) {
             cancelBtn.getStyleClass().add("subtle-button");
         }
-    }
-
-
-    
-    
-
-    
+    }  
 }

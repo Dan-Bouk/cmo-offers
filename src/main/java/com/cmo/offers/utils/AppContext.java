@@ -9,7 +9,10 @@ import com.cmo.offers.dao.OfferRefDAO;
 import com.cmo.offers.dao.OfferTreeDAO;
 import com.cmo.offers.dao.PlantDAO;
 import com.cmo.offers.dao.UserDAO;
+import com.cmo.offers.export.service.OfferExcelExportService;
+import com.cmo.offers.export.service.OfferExportService;
 import com.cmo.offers.export.service.OfferJsonService;
+import com.cmo.offers.load.service.OfferImportService;
 import com.cmo.offers.service.AuthService;
 import com.cmo.offers.service.OfferFileStateService;
 import com.cmo.offers.ui.service.MPService;
@@ -39,6 +42,9 @@ public class AppContext {
     public final RawMaterialService rawMaterialService;
     public final OfferService offerService;
     public final AuthService authService;
+    public final OfferExportService exportService;
+    public final OfferImportService importService;
+    public final OfferJsonService jsonService;
     
     public final ReferenceWindowManager windowManager; 
     public final OfferFileStateService fileStateService;
@@ -57,6 +63,8 @@ public class AppContext {
         this.clientMarkupDAO = new ClientMarkupDAO();
 
         // ---- Services (dependency order matters!) ----
+        this.jsonService = new OfferJsonService();
+        
         this.mpService = new MPService(
                 materialDAO,
                 marketPriceDAO,
@@ -79,6 +87,25 @@ public class AppContext {
                 new UserDAO()
         );
         
+        this.exportService = new OfferExportService (
+        		offerService,
+        		offerRefDAO,
+        		clientDAO,
+        		jsonService,
+        		new OfferExcelExportService(clientDAO, plantDAO, mpService)
+        );
+        
+        this.importService = new OfferImportService(
+                new OfferJsonService(),
+                offerService,
+                offerRefDAO,
+                clientDAO,
+                plantDAO,
+                materialDAO,
+                marketPriceDAO,
+                rawMaterialService
+        );
+        
     	this.windowManager = new ReferenceWindowManager(
     	        offerService,
     	        clientDAO,
@@ -90,7 +117,7 @@ public class AppContext {
     	
     	this.fileStateService = new OfferFileStateService(
     			offerRefDAO,
-    			new OfferJsonService()
+    			jsonService
     	);
         
     }

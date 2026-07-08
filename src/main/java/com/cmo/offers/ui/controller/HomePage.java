@@ -104,6 +104,8 @@ public class HomePage extends BorderPane {
                     ctx.marketPriceDAO,
                     ctx.rawMaterialService,
                     ctx.offerRefDAO,
+                    ctx.exportService,
+                    ctx.importService,
                     ctx.windowManager,
                     ctx.fileStateService,
                     this::openNewOfferForm

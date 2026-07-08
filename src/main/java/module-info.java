@@ -34,6 +34,8 @@ module com.cmo.offers {
     exports com.cmo.offers.service;
     exports com.cmo.offers.ui.window;
     exports com.cmo.offers.export.service;
+    exports com.cmo.offers.load.service;
+
 
     opens com.cmo.offers.entity to com.fasterxml.jackson.databind;
     
