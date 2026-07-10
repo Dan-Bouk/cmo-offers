@@ -15,6 +15,7 @@ import com.cmo.offers.export.service.OfferJsonService;
 import com.cmo.offers.load.service.OfferImportService;
 import com.cmo.offers.service.AuthService;
 import com.cmo.offers.service.OfferFileStateService;
+import com.cmo.offers.ui.manager.StageManager;
 import com.cmo.offers.ui.service.MPService;
 import com.cmo.offers.ui.service.OfferService;
 import com.cmo.offers.ui.service.RawMaterialService;
@@ -48,6 +49,8 @@ public class AppContext {
     
     public final ReferenceWindowManager windowManager; 
     public final OfferFileStateService fileStateService;
+    
+    private final StageManager stageManager;
     
     public AppContext() {
 
@@ -106,13 +109,16 @@ public class AppContext {
                 rawMaterialService
         );
         
+        this.stageManager = new StageManager();
+        
     	this.windowManager = new ReferenceWindowManager(
     	        offerService,
     	        clientDAO,
     	        plantDAO,
     	        materialDAO,
     	        marketPriceDAO,
-    	        rawMaterialService
+    	        rawMaterialService,
+    	        stageManager
     	);
     	
     	this.fileStateService = new OfferFileStateService(

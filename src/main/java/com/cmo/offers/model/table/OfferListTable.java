@@ -24,18 +24,15 @@ import javafx.scene.control.cell.TextFieldTreeTableCell;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
-import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import javafx.stage.Window;
 import javafx.util.StringConverter;
 import javafx.util.converter.DefaultStringConverter;
 
-import java.io.File;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 import com.cmo.offers.dao.ClientDAO;
 import com.cmo.offers.dao.ClientMarkupDAO;
@@ -45,12 +42,12 @@ import com.cmo.offers.dao.OfferRefDAO;
 import com.cmo.offers.dao.PlantDAO;
 import com.cmo.offers.entity.ClientEntity;
 import com.cmo.offers.entity.OfferEntity;
-import com.cmo.offers.entity.OfferRefEntity;
 import com.cmo.offers.export.service.OfferExportService;
 import com.cmo.offers.load.service.OfferImportService;
 
 import com.cmo.offers.model.row.OfferRefJoinRow;
 import com.cmo.offers.model.row.OfferTreeRow;
+import com.cmo.offers.service.OfferActionController;
 import com.cmo.offers.service.OfferFileStateService;
 import com.cmo.offers.ui.service.OfferService;
 import com.cmo.offers.ui.service.RawMaterialService;
@@ -71,12 +68,16 @@ public class OfferListTable extends BorderPane {
     private final PlantDAO plantDAO;
     @SuppressWarnings("unused")
     private final RawMaterialService rawMaterialService;
+    @SuppressWarnings("unused")
     private final OfferRefDAO offerRefDAO;
     private final ReferenceWindowManager windowManager;
     private final OfferFileStateService fileStateService;
+    private final OfferActionController actionController;
     private final Runnable onNewOffer;
 
-    private final OfferExportService exportService;
+    @SuppressWarnings("unused")
+    private final OfferExportService exportService;    
+    @SuppressWarnings("unused")
     private final OfferImportService importService;
     
     private final ComboBox<ClientEntity> clientFilter = new ComboBox<>();
@@ -114,6 +115,19 @@ public class OfferListTable extends BorderPane {
         this.windowManager = windowManager;
         this.fileStateService = fileStateService;
         this.onNewOffer = onNewOffer;    
+        
+        this.actionController = new OfferActionController(
+                offerService,
+                fileStateService,
+                exportService,
+                importService,
+                windowManager,
+                clientDAO,
+                offerRefDAO,
+                this::refresh,
+                treeTable::refresh,
+                this::getOwningStage
+        );
 
         setPadding(new Insets(10));
         setTop(buildTopBar());
@@ -374,35 +388,35 @@ public class OfferListTable extends BorderPane {
                 saveChangesItem.setOnAction(e -> {
                     OfferTreeRow row = getCurrentRow();
                     if (row != null && !row.isReferenceRow()) {
-                        saveOfferRowChanges(row);
+                    	actionController.saveOfferRowChanges(row);                    
                     }
                 });
 
                 duplicateItem.setOnAction(e -> {
                     OfferTreeRow row = getCurrentRow();
                     if (row != null && !row.isReferenceRow()) {
-                        duplicateOffer(row);
+                    	actionController.duplicateOffer(row);                    
                     }
                 });
 
                 exportJsonItem.setOnAction(e -> {
                     OfferTreeRow row = getCurrentRow();
                     if (row != null && !row.isReferenceRow()) {
-                        exportOfferRowToJson(row);
+                    	actionController.exportOfferRowToJson(row);
                     }
                 });
 
                 exportExcelItem.setOnAction(e -> {
                     OfferTreeRow row = getCurrentRow();
                     if (row != null && !row.isReferenceRow()) {
-                        exportOfferRowToExcel(row);
+                    	actionController.exportOfferRowToExcel(row);
                     }
                 });
 
                 deleteItem.setOnAction(e -> {
                     OfferTreeRow row = getCurrentRow();
                     if (row != null && !row.isReferenceRow()) {
-                        deleteOffer(row);
+                    	actionController.deleteOffer(row);
                     }
                 });
             }
@@ -459,87 +473,6 @@ public class OfferListTable extends BorderPane {
         return button;
     }
 
-    private void saveOfferRowChanges(OfferTreeRow row) {
-        if (row == null || row.isReferenceRow()) {
-            return;
-        }
-
-        Task<OfferEntity> task = new Task<>() {
-            @Override
-            protected OfferEntity call() throws Exception {
-                OfferEntity offer = offerService.getOfferById(row.getOfferId());
-
-                offer.setOfferNr(trimToNull(row.getOfferNr()));
-                offer.setRevision(trimToNull(row.getRevision()));
-                offer.setOfferDate(row.getOfferDate());
-                offer.setRequestNr(trimToNull(row.getRequestNr()));
-
-                String customerName = trimToNull(row.getCustomerName());
-                if (customerName == null) {
-                    throw new IllegalArgumentException("Customer is required.");
-                }
-
-                ClientEntity client = clientDAO.findByName(customerName)
-                        .orElseThrow(() -> new IllegalArgumentException("Customer not found: " + customerName));
-                offer.setClientId(client.getId());
-
-                offerService.saveOrUpdate(offer);
-                return offerService.getOfferById(offer.getId());
-            }
-        };
-
-        task.setOnSucceeded(e -> {
-            OfferEntity updatedOffer = task.getValue();
-
-            Optional<ClientEntity> savedClient = Optional.empty();
-            try {
-                savedClient = clientDAO.findById(updatedOffer.getClientId());
-            } catch (Exception ex) {
-                showError("Failed to reload customer", ex);
-            }
-
-            String updatedCustomerName = savedClient.map(ClientEntity::getName).orElse(row.getCustomerName());
-
-            row.setOfferNr(updatedOffer.getOfferNr());
-            row.setRevision(updatedOffer.getRevision());
-            row.setOfferDate(updatedOffer.getOfferDate());
-            row.setRequestNr(updatedOffer.getRequestNr());
-            row.setCustomerName(updatedCustomerName);
-
-            try {
-                fileStateService.persistOfferHeaderToAllReferenceStateFiles(updatedOffer, updatedCustomerName);
-            } catch (Exception ex) {
-                showError("Failed to update saved reference files", ex);
-            }
-
-            treeTable.refresh();
-            
-            windowManager.notifyOfferUpdated(
-                    updatedOffer,
-                    updatedCustomerName,
-                    null
-            );
-            
-            Alert alert = new Alert(Alert.AlertType.INFORMATION);
-            alert.setTitle("Save completed");
-            alert.setHeaderText("Offer updated successfully");
-            alert.setContentText("The offer row and all references were updated.");
-            alert.showAndWait();
-        });
-
-        task.setOnFailed(e -> showError("Failed to save offer changes", task.getException()));
-        new Thread(task, "save-offer-row-" + row.getOfferId()).start();
-    }
-
-    private String trimToNull(String value) {
-        if (value == null) {
-            return null;
-        }
-
-        String trimmed = value.trim();
-        return trimmed.isEmpty() ? null : trimmed;
-    }
-
     private void wireActions() {
         refreshBtn.setOnAction(e -> refresh());
 
@@ -552,7 +485,8 @@ public class OfferListTable extends BorderPane {
                 onNewOffer.run();
             }
         });
-        importBtn.setOnAction(e -> importOfferJson());
+        
+        importBtn.setOnAction(e -> actionController.importOfferJson());
     }
 
     public void refresh() {
@@ -663,175 +597,11 @@ public class OfferListTable extends BorderPane {
                 return;
             }
 
-            saveReferenceAsync(offerRow.getOfferId(), trimmed);
-        });
-    }
-
-    private void exportOfferRowToJson(OfferTreeRow row) {
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("Export Offer to JSON");
-        chooser.getExtensionFilters().setAll(
-                new FileChooser.ExtensionFilter("JSON files", "*.json")
-        );
-        chooser.setInitialFileName("offer_" + row.getOfferNr() + ".json");
-
-        File selectedFile = chooser.showSaveDialog(getOwningStage());
-        if (selectedFile == null) {
-            return;
-        }
-
-        Task<Void> task = new Task<>() {
-            @Override
-            protected Void call() throws Exception {
-                exportService.exportOfferToJson(row.getOfferId(), selectedFile, getOwningStage());
-                return null;
-            }
-        };
-
-        task.setOnSucceeded(e -> {
-            Alert alert = new Alert(Alert.AlertType.INFORMATION);
-            alert.setTitle("Export completed");
-            alert.setHeaderText("Offer exported successfully");
-            alert.setContentText("Saved to:\n" + selectedFile.getAbsolutePath());
-            alert.showAndWait();
-        });
-
-        task.setOnFailed(e -> showError("Failed to export offer to JSON", task.getException()));
-        new Thread(task, "export-offer-json-" + row.getOfferId()).start();
-    }
-
-    private void exportOfferRowToExcel(OfferTreeRow row) {
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("Export Offer to Excel");
-        chooser.getExtensionFilters().setAll(
-                new FileChooser.ExtensionFilter("Excel files", "*.xlsx")
-        );
-        chooser.setInitialFileName("offer_" + row.getOfferNr() + ".xlsx");
-
-        File selectedFile = chooser.showSaveDialog(getOwningStage());
-        if (selectedFile == null) {
-            return;
-        }
-
-        Task<Void> task = new Task<>() {
-            @Override
-            protected Void call() throws Exception {
-                exportService.exportOfferToExcel(row.getOfferId(), selectedFile, getOwningStage());
-                return null;
-            }
-        };
-
-        task.setOnSucceeded(e -> {
-            Alert alert = new Alert(Alert.AlertType.INFORMATION);
-            alert.setTitle("Export completed");
-            alert.setHeaderText("Offer exported successfully");
-            alert.setContentText("Saved to:\n" + selectedFile.getAbsolutePath());
-            alert.showAndWait();
-        });
-
-        task.setOnFailed(e -> showError("Failed to export offer to Excel", task.getException()));
-        new Thread(task, "export-offer-excel-" + row.getOfferId()).start();
-    }
-
-    private void importOfferJson() {
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("Import Offer");
-        chooser.getExtensionFilters().setAll(
-                new FileChooser.ExtensionFilter("JSON files", "*.json")
-        );
-
-        File selectedFile = chooser.showOpenDialog(getOwningStage());
-        if (selectedFile == null) {
-            return;
-        }
-
-        Task<Void> task = new Task<>() {
-            @Override
-            protected Void call() throws Exception {
-                importService.importOffer(selectedFile, getOwningStage());
-                return null;
-            }
-        };
-
-        task.setOnSucceeded(e -> {
-            Alert alert = new Alert(Alert.AlertType.INFORMATION);
-            alert.setTitle("Import completed");
-            alert.setHeaderText("Offer imported successfully");
-            alert.setContentText("Imported from:\n" + selectedFile.getAbsolutePath());
-            alert.showAndWait();
-            refresh();
-        });
-
-        task.setOnFailed(e -> showError("Failed to import offer", task.getException()));
-        new Thread(task, "import-offer-json").start();
-    }
-
-    private void duplicateOffer(OfferTreeRow row) {
-        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
-        confirm.setTitle("Duplicate offer");
-        confirm.setHeaderText("Duplicate offer " + row.getOfferNr() + "?");
-        confirm.setContentText("A new offer will be created with the same header and references.");
-
-        styleAlertButtons(confirm);
-
-        confirm.showAndWait().ifPresent(result -> {
-            if (result != ButtonType.OK) {
-                return;
-            }
-
-            Task<OfferEntity> task = new Task<>() {
-                @Override
-                protected OfferEntity call() throws Exception {
-                    OfferEntity duplicatedOffer = offerService.duplicateOffer(row.getOfferId());
-                    fileStateService.copyReferenceStateFiles(row.getOfferId(), duplicatedOffer.getId());
-                    return duplicatedOffer;
-                }
-            };
-
-            task.setOnSucceeded(e -> {
-                OfferEntity duplicatedOffer = task.getValue();
-                refresh();
-
-                Alert alert = new Alert(Alert.AlertType.INFORMATION);
-                alert.setTitle("Offer duplicated");
-                alert.setHeaderText("Offer duplicated successfully");
-                alert.setContentText("Created offer: " + duplicatedOffer.getOfferNr());
-                alert.showAndWait();
-            });
-
-            task.setOnFailed(e -> showError("Failed to duplicate offer", task.getException()));
-            new Thread(task, "duplicate-offer-" + row.getOfferId()).start();
-        });
-    }
-
-    private void deleteOffer(OfferTreeRow row) {
-        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
-        confirm.setTitle("Delete offer");
-        confirm.setHeaderText("Delete offer " + row.getOfferNr() + "?");
-        confirm.setContentText("This will remove the offer, all its references, and the saved reference files.");
-
-        styleAlertButtons(confirm);
-
-        confirm.showAndWait().ifPresent(result -> {
-            if (result != ButtonType.OK) {
-                return;
-            }
-
-            Task<Void> task = new Task<>() {
-                @Override
-                protected Void call() throws Exception {
-                    windowManager.closeOfferWindows(row.getOfferId());
-                    fileStateService.deleteReferenceStateFiles(row.getOfferId());
-                    offerService.deleteOffer(row.getOfferId());
-                    return null;
-                }
-            };
-
-            task.setOnSucceeded(e -> refresh());
-            task.setOnFailed(e -> showError("Failed to delete offer", task.getException()));
-            new Thread(task, "delete-offer-" + row.getOfferId()).start();
-        });
-    }
+            actionController.saveReference(
+                    offerRow.getOfferId(),
+                    trimmed
+            );        });
+    }    
         
     private Stage getOwningStage() {
         Scene scene = getScene();
@@ -842,13 +612,7 @@ public class OfferListTable extends BorderPane {
         return window instanceof Stage ? (Stage) window : null;
     }
     
-    private void showError(String title, Throwable ex) {
-        Alert alert = new Alert(Alert.AlertType.ERROR);
-        alert.setTitle(title);
-        alert.setHeaderText(title);
-        alert.setContentText(ex == null ? "Unknown error" : ex.getMessage());
-        alert.showAndWait();
-    }
+
     
     // Synchronize the application after a reference updated an offer
     private void syncAfterReferenceUpdate(
@@ -885,33 +649,17 @@ public class OfferListTable extends BorderPane {
                 updatedCustomerName,
                 sourceReferenceId
         );
-    }
+    }    
     
-    private void saveReferenceAsync(int offerId, String referenceName) {
-        Task<Void> task = new Task<>() {
-            @Override
-            protected Void call() throws Exception {
-                OfferRefEntity ref = new OfferRefEntity();
-                ref.setOfferId(offerId);
-                ref.setDoc(referenceName);
-
-                offerRefDAO.save(ref);
-                return null;
-            }
-        };
-
-        task.setOnSucceeded(e -> refresh());
-        task.setOnFailed(e -> showError("Failed to add reference", task.getException()));
-        new Thread(task, "save-reference").start();
+    private void showError(String title, Throwable ex) {
+        Alert alert = new Alert(Alert.AlertType.ERROR);
+        alert.setTitle(title);
+        alert.setHeaderText(title);
+        alert.setContentText(
+                ex == null || ex.getMessage() == null
+                        ? "Unknown error"
+                        : ex.getMessage()
+        );
+        alert.showAndWait();
     }
-    
-    private void styleAlertButtons(Alert alert) {
-        DialogPane pane = alert.getDialogPane();
-        if (pane.lookupButton(ButtonType.OK) instanceof Button okBtn) {
-            okBtn.getStyleClass().add("primary-button");
-        }
-        if (pane.lookupButton(ButtonType.CANCEL) instanceof Button cancelBtn) {
-            cancelBtn.getStyleClass().add("subtle-button");
-        }
-    }  
 }
