@@ -35,10 +35,10 @@ import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.function.BiConsumer;
-import java.util.function.Consumer;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 public class OfferExcelExportService {
 	
@@ -75,16 +75,17 @@ public class OfferExcelExportService {
             try (Workbook workbook = new XSSFWorkbook(is)) {
             	fillMpSheet(workbook.getSheet("MP"), bundle);
             	
-                List<ReferenceExportModel> references = safeList(bundle.getReferences());
+            	fillOfferSheet(workbook.getSheet("OFFER"), bundle);
 
-                syncReferenceSheets(workbook, references.size());
-            	
-                fillOfferSheet(workbook.getSheet("OFFER"), bundle);
+            	// OFFER no longer depends on SC sheets, so remove them.
+            	removeReferenceSheets(workbook);
 
-                for (int i = 0; i < references.size(); i++) {
-                    Sheet refSheet = workbook.getSheet("SC" + (i + 1));
-                    fillReferenceSheet(refSheet, bundle.getOffer(), references.get(i));
-                }
+            	int offerIndex = workbook.getSheetIndex("OFFER");
+
+            	if (offerIndex >= 0) {
+            	    workbook.setActiveSheet(offerIndex);
+            	    workbook.setSelectedTab(offerIndex);
+            	}
 
                 workbook.setForceFormulaRecalculation(true);
 
@@ -94,6 +95,17 @@ public class OfferExcelExportService {
             }
         }
     }
+	
+	private void removeReferenceSheets(Workbook workbook) {
+	    for (int i = workbook.getNumberOfSheets() - 1; i >= 0; i--) {
+	        String sheetName = workbook.getSheetName(i);
+
+	        if (sheetName != null
+	                && sheetName.matches("(?i)^SC\\d+$")) {
+	            workbook.removeSheetAt(i);
+	        }
+	    }
+	}
 	
 	private void clearMpDataCells(Sheet sheet) {
 	    // Copper
@@ -214,6 +226,19 @@ public class OfferExcelExportService {
 
         OfferExportModel offer = bundle.getOffer();
         List<ReferenceExportModel> refs = safeList(bundle.getReferences());
+        
+        int additionalOperationSlots =
+                findAdditionalOperationSlotCount(refs);
+
+        prepareAdditionalOperationColumns(
+                sheet,
+                additionalOperationSlots
+        );
+
+        System.out.println(
+                "Additional operation slots required: "
+                        + additionalOperationSlots
+        );
 
         // HEADER (unchanged)
         set(sheet, "C4", readCustomer(offer));
@@ -259,8 +284,13 @@ public class OfferExcelExportService {
 
             if (i < refs.size()) {
                 row.setZeroHeight(false);
-                fillOfferSummaryRow(sheet, rowNum, i + 1, refs.get(i));
-            } else {
+                fillOfferSummaryRow(
+                        sheet,
+                        rowNum,
+                        i + 1,
+                        refs.get(i),
+                        additionalOperationSlots
+                );            } else {
                 clearOfferSummaryRow(sheet, rowNum);
                 row.setZeroHeight(true);
             }
@@ -336,336 +366,543 @@ public class OfferExcelExportService {
         return result.toString();
     }    
     
-    private Sheet ensureReferenceSheet(Workbook workbook, int index) {
-        String targetName = "SC" + index;
-
-        int existingIndex = findSheetIndexByName(workbook, targetName);
-        if (existingIndex >= 0) {
-            return workbook.getSheetAt(existingIndex);
-        }
-
-        int templateIndex = findLastReferenceSheetIndex(workbook);
-        if (templateIndex < 0) {
-            throw new IllegalStateException("No SC template sheet found.");
-        }
-
-        workbook.cloneSheet(templateIndex);
-
-        int newSheetIndex = workbook.getNumberOfSheets() - 1;
-        workbook.setSheetName(newSheetIndex, targetName);
-        workbook.setSheetHidden(newSheetIndex, false);
-
-        return workbook.getSheetAt(newSheetIndex);
-    }
-    
-    private void syncReferenceSheets(Workbook workbook, int referenceCount) {
-        if (referenceCount < 1) {
-            referenceCount = 1;
-        }
-
-        int offerIndex = findSheetIndexByName(workbook, "OFFER");
-        if (offerIndex >= 0) {
-            workbook.setActiveSheet(offerIndex);
-            workbook.setSelectedTab(offerIndex);
-        }
-
-        // Ensure SC1..SC(referenceCount) exist
-        for (int i = 1; i <= referenceCount; i++) {
-            ensureReferenceSheet(workbook, i);
-        }
-
-        // Hide unused SC sheets instead of removing them
-        for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
-            String name = workbook.getSheetName(i);
-            if (name != null && name.matches("^SC\\d+$")) {
-                int sheetNumber = Integer.parseInt(name.substring(2));
-                if (sheetNumber > referenceCount) {
-                    workbook.setSheetVisibility(i, SheetVisibility.VERY_HIDDEN);
-                } else {
-                    workbook.setSheetVisibility(i, SheetVisibility.VISIBLE);
-                }
-            }
-        }
-    }
-    
-    private void fillReferenceSheet(Sheet sheet, OfferExportModel offer, ReferenceExportModel ref) {
+    private void fillOfferSummaryRow(
+            Sheet sheet,
+            int rowNum,
+            int refIndex,
+            ReferenceExportModel ref,
+            int additionalOperationSlots
+    ) {
+        Row row = getOrCreateRow(sheet, rowNum);
         GIExportModel gi = ref.getGeneralInfo();
+        
+        /*
+         * TEMPORARY TEST:
+         * Check how many external additional operations
+         * are detected for this reference.
+         */
+        List<OperationsExportModel> additionalOperations =
+                getExternalAdditionalOperations(ref);
 
-        set(sheet, "H1", gi != null ? gi.getOfferNr() : offer.getOfferNr());
-        setDate(sheet, "J1", gi != null ? gi.getOfferDate() : offer.getOfferDate());
-        set(sheet, "L1", gi != null ? gi.getRevision() : offer.getRevision());
+        System.out.println(
+                "Reference " + refIndex
+                        + " matched external additional operations: "
+                        + additionalOperations.size()
+        );
 
-        set(sheet, "C2", gi != null ? gi.getCustomerName() : readCustomer(offer));
-        set(sheet, "H2", gi != null ? gi.getRequestNr() : readRequest(offer));
-
-        set(sheet, "C3", gi == null ? null : gi.getReferenceDoc());
-        set(sheet, "H3", gi == null ? null : gi.getDescription());
-
-        set(sheet, "C4", gi == null ? null : gi.getDrawing());
-        set(sheet, "G4", gi == null ? null : gi.getDrawingRev());
-        setNumber(sheet, "J4", gi == null ? null : gi.getQuantityPerYear());
-        setNumber(sheet, "L4", gi == null ? null : gi.getQuantityPerBatch());
-
-        setDate(sheet, "C5", gi == null ? null : gi.getFirstDeliveryDate());
-        setDate(sheet, "G5", gi == null ? null : gi.getLastDeliveryDate());
-        setNumber(sheet, "J5", gi == null ? null : gi.getDeliveryBatch());
-
-        fillTooling(sheet, safeList(ref.getTooling()));
-        fillComponents(sheet, safeList(ref.getComponents()));
-        fillRawMaterials(sheet, safeList(ref.getRawMaterials()));
-        fillOperations(sheet, safeList(ref.getOperations()));
-        fillTreatments(sheet, safeList(ref.getTreatments()));
-        fillOtherCosts(sheet, safeList(ref.getOtherCosts()));
-    }
-
-    private void fillTooling(Sheet sheet, List<ToolingExportModel> rows) {
-    	fillVariableTable(sheet, rows, 8, 5, false, (row, dto) -> {
-    	    set(row, 1, dto.getCdc());
-    	    set(row, 2, dto.getToolName());
-    	    setNumber(row, 3, dto.getQuantity());
-    	    setNumber(row, 4, dto.getUnitCost());
-    	    setNumber(row, 6, dto.getMarkup());
-    	    }, 
-    		row -> {
-    			clear(row, 1);
-    		    clear(row, 2);
-    		    clear(row, 3);
-    		    clear(row, 4);
-    		    clear(row, 6);
-    		});
-    }
-
-    private void fillComponents(Sheet sheet, List<ComponentsExportModel> rows) {
-        fillVariableTable(sheet, rows, 16, 5, false, (row, dto) -> {
-            set(row, 1, dto.getCdc());
-            set(row, 2, dto.getComponentName());
-            setNumber(row, 3, dto.getQuantity());
-            setNumber(row, 4, dto.getUnitCost());
-            setNumber(row, 6, dto.getMarkup());
-            // Keep E and G formulas
-        	},
-        	row -> {
-        		clear(row, 1);
-       		    clear(row, 2);
-       		    clear(row, 3);
-       		    clear(row, 4);
-       		    clear(row, 6);
-        	});
-    }
-
-    private void fillRawMaterials(Sheet sheet, List<RMExportModel> rows) {
-        fillVariableTable(sheet, rows, 24, 1, false, (row, dto) -> {
-            set(row, 1, dto.getMaterialCode());
-            set(row, 2, dto.getDescription());
-            setNumber(row, 3, dto.getGrossWeight());
-            setNumber(row, 4, dto.getNetWeight());
-            setNumber(row, 6, dto.getScrapValuePercentage());
-            setNumber(row, 7, dto.getTransformationPrice());
-            // Keep E/H/J/K/L/M formulas
-        	},
-        	row -> {
-       			clear(row, 1);
-       		    clear(row, 2);
-       		    clear(row, 3);
-       		    clear(row, 4);
-       		    clear(row, 6);
-       		    clear(row, 7);
-       		});
-    }
-
-    private void fillOperations(Sheet sheet, List<OperationsExportModel> rows) {
-        fillVariableTable(sheet, rows, 28, 10, false, (row, dto) -> {
-            setNumber(row, 1, dto.getFase());
-            set(row, 2, dto.getOperationName());
-            set(row, 3, dto.getType());
-            set(row, 4, dto.getIntExt());
-            set(row, 5, dto.getCenter());
-            setNumber(row, 6, dto.getCost());
-            setNumber(row, 7, dto.getSetupMinutes());
-            setNumber(row, 8, dto.getProductionSeconds());
-            setNumber(row, 11, dto.getMarkup());
-        	},
-       		row -> {
-           		clear(row, 1);
-           	    clear(row, 2);
-           	    clear(row, 3);
-           	    clear(row, 4);
-           	    clear(row, 5);
-           	    clear(row, 6);
-           	    clear(row, 7);
-           	    clear(row, 8);
-           	    clear(row, 11);
-           	});	
-    }
-
-    private void fillTreatments(Sheet sheet, List<TreatmentsExportModel> rows) {
-        fillVariableTable(sheet, rows, 42, 1, false, (row, dto) -> {
-            setNumber(row, 1, dto.getFase());
-            set(row, 2, dto.getTreatmentName());
-            set(row, 3, dto.getType());
-            set(row, 4, dto.getIntExt());
-            set(row, 5, dto.getCenter());
-            setNumber(row, 7, dto.getOperationCost());
-            setNumber(row, 8, dto.getOperationMarkup());
-            setNumber(row, 10, dto.getSilverQuantityGr());
-            setNumber(row, 12, dto.getSilverMarkup());
-            // Keep I/K/M formulas
-        	},
-        	row -> {
-        		clear(row, 1);
-        		clear(row, 2);
-        		clear(row, 3);
-        		clear(row, 4);
-        		clear(row, 5);
-        		clear(row, 7);
-        		clear(row, 8);
-        		clear(row, 10);
-        		clear(row, 12);
-        	});
-    }
-
-    private void fillOtherCosts(Sheet sheet, List<OtherExportModel> rows) {
-        final int startRow = 46;
-        final int maxRows = 4;
-
-        if (rows == null || rows.isEmpty()) {
-            // Keep the 4 default template rows exactly as they are.
-            for (int i = 0; i < maxRows; i++) {
-                Row row = getOrCreateRow(sheet, startRow + i);
-                row.setZeroHeight(false);
-            }
-            return;
+        for (OperationsExportModel operation : additionalOperations) {
+            System.out.println(
+                    "Matched operation: "
+                            + operation.getOperationName()
+            );
         }
+        
+        System.out.println(
+                "Reference " + refIndex
+                        + " uses sheet slot count: "
+                        + additionalOperationSlots
+        );
 
-        for (int i = 0; i < maxRows; i++) {
-            Row row = getOrCreateRow(sheet, startRow + i);
-            row.setZeroHeight(false);
+        // A — reference row number
+        set(row, 1, Integer.toString(refIndex));
 
-            OtherExportModel dto = i < rows.size() ? rows.get(i) : null;
+        // B — reference document
+        set(row, 2, gi != null ? gi.getReferenceDoc() : null);
 
-            if (dto == null) {
-                continue;
-            }
+        // C — description
+        set(row, 3, gi != null ? gi.getDescription() : null);
 
-            set(row, 1, dto.getCdc());
-            set(row, 2, dto.getDescription());
+        // D — drawing
+        set(row, 4, gi != null ? gi.getDrawing() : null);
 
-            // For rows like TRAS/PACK/MP/MACH the template often uses formulas/bindings.
-            // We only write editable/value cells when present.
-            if (!isSpecialOtherCost(dto)) {
-                setNumber(row, 3, dto.getQuantity());
-                setNumber(row, 4, dto.getUnitCost());
-                setNumber(row, 7, dto.getMarkup());
+        // E — drawing revision
+        set(row, 5, gi != null ? gi.getDrawingRev() : null);
+
+        // F — quantity per year
+        setNumber(
+                row,
+                6,
+                gi != null && gi.getQuantityPerYear() != null
+                        ? BigDecimal.valueOf(gi.getQuantityPerYear())
+                        : null
+        );
+
+        // G — quantity per batch
+        setNumber(
+                row,
+                7,
+                gi != null && gi.getQuantityPerBatch() != null
+                        ? BigDecimal.valueOf(gi.getQuantityPerBatch())
+                        : null
+        );
+
+        // H — delivery batch
+        setNumber(
+                row,
+                8,
+                gi != null && gi.getDeliveryBatch() != null
+                        ? BigDecimal.valueOf(gi.getDeliveryBatch())
+                        : null
+        );
+
+        /*
+         * Keep columns I–AC temporarily connected to the SC sheet.
+         * We will replace these with Java calculations in the next step.
+         */
+
+        RMExportModel material = getFirstRawMaterial(ref);
+
+     // I — gross weight
+     setNumber(
+             row,
+             9,
+             material != null ? material.getGrossWeight() : null
+     );
+
+     // J — net weight
+     setNumber(
+             row,
+             10,
+             material != null ? material.getNetWeight() : null
+     );
+
+     // K — scrap weight
+     if (material != null
+             && material.getGrossWeight() != null
+             && material.getNetWeight() != null) {
+
+    	 setNumber(
+    		        row,
+    		        11,
+    		        material.getGrossWeight().doubleValue()
+    		                - material.getNetWeight().doubleValue()
+    		);
+     } else {
+         setNumber(row, 11, null);
+     }
+
+     // L — material code
+     set(
+             row,
+             12,
+             material != null ? material.getMaterialCode() : null
+     );
+
+     // M — material description
+     set(
+             row,
+             13,
+             material != null ? material.getDescription() : null
+     );
+
+     // N — final material price per kg
+     setNumber(
+             row,
+             14,
+             material != null ? material.getFinalEurPerKg() : null
+     );
+
+     // O — transformation price
+     setNumber(
+             row,
+             15,
+             material != null ? material.getTransformationPrice() : null
+     );
+
+     // P — total raw-material price
+     setNumber(
+             row,
+             16,
+             material != null ? material.getPrice() : null
+     );
+
+  // Q — total operation setup cost
+     setNumber(
+             row,
+             17,
+             sumOperationSetupCost(ref.getOperations())
+     );
+
+     // R — total operation production cost
+     setNumber(
+             row,
+             18,
+             sumOperationProductionCost(ref.getOperations())
+     );
+  // S — silver quantity
+     setNumber(
+             row,
+             19,
+             sumTreatmentSilverQuantity(ref.getTreatments())
+     );
+
+     // T — treatment selling price
+     setNumber(
+             row,
+             20,
+             sumTreatmentPrice(ref.getTreatments())
+     );
+
+     // U — silver cost
+     setNumber(
+             row,
+             21,
+             sumTreatmentSilverCost(ref.getTreatments())
+     );
+
+        /*
+         * Dynamic additional-operation section.
+         *
+         * Column numbers here are 1-based:
+         * W = 23
+         * X = 24
+         */
+        int additionalOperationsStartColumn = 22;
+
+        for (int i = 0; i < additionalOperationSlots; i++) {
+            int descriptionColumn =
+                    additionalOperationsStartColumn + (i * 2);
+
+            int priceColumn =
+                    descriptionColumn + 1;
+
+            if (i < additionalOperations.size()) {
+                OperationsExportModel operation =
+                        additionalOperations.get(i);
+
+                // Description
+                set(
+                        row,
+                        descriptionColumn,
+                        operation.getOperationName()
+                );
+
+                // Selling price per piece
+                setNumber(
+                        row,
+                        priceColumn,
+                        getOperationSellingPrice(operation)
+                );
+            } else {
+                // Leave unused slots empty
+                set(row, descriptionColumn, null);
+                setNumber(row, priceColumn, null);
             }
         }
+        
+        int componentsDescriptionColumn =
+                additionalOperationsStartColumn
+                        + (additionalOperationSlots * 2);
+
+        int componentsPriceColumn =
+                componentsDescriptionColumn + 1;
+        
+        set(
+                row,
+                componentsDescriptionColumn,
+                buildComponentsDescription(ref.getComponents())
+        );
+
+        setNumber(
+                row,
+                componentsPriceColumn,
+                sumComponentPrices(ref.getComponents())
+        );
+        
+        int extraOperationColumns =
+                Math.max(0, additionalOperationSlots - 1) * 2;
+
+        int toolingPriceColumn = 25 + extraOperationColumns;
+        int packagingColumn = 26 + extraOperationColumns;
+        int transportColumn = 27 + extraOperationColumns;
+        int finalPriceColumn = 28 + extraOperationColumns;
+        int toolingCostColumn = 29 + extraOperationColumns;
+        int firstDeliveryColumn = 30 + extraOperationColumns;
+        int lastDeliveryColumn = 31 + extraOperationColumns;
+
+        setNumber(
+                row,
+                toolingPriceColumn,
+                sumToolingPrices(ref.getTooling())
+        );
+
+        setNumber(
+                row,
+                packagingColumn,
+                findOtherCostPrice(ref.getOtherCosts(), "PACK")
+        );
+
+        setNumber(
+                row,
+                transportColumn,
+                findOtherCostPrice(ref.getOtherCosts(), "TRAS")
+        );
+
+        setNumber(
+                row,
+                finalPriceColumn,
+                calculateOfferRowPrice(ref)
+        );
+
+        setNumber(
+                row,
+                toolingCostColumn,
+                sumToolingCosts(ref.getTooling())
+        );
+
+        setDateInRow(
+                row,
+                firstDeliveryColumn,
+                gi != null ? gi.getFirstDeliveryDate() : null
+        );
+
+        setDateInRow(
+                row,
+                lastDeliveryColumn,
+                gi != null ? gi.getLastDeliveryDate() : null
+        );
     }
     
-    private void fillOfferSummaryRow(Sheet sheet, int rowNum, int refIndex, ReferenceExportModel ref) {
-        Row row = getOrCreateRow(sheet, rowNum);
-        String sc = "'SC" + refIndex + "'!";
+    private BigDecimal calculateOfferRowPrice(
+            ReferenceExportModel ref
+    ) {
+        RMExportModel material = getFirstRawMaterial(ref);
 
-        set(row, 1, Integer.toString(refIndex));          // A
+        BigDecimal rawMaterialPrice =
+                material != null && material.getPrice() != null
+                        ? material.getPrice()
+                        : BigDecimal.ZERO;
 
-        setFormula(row, 2,  sc + "$C$3");                 // B
-        setStringReference(row, 3,  sc + "$H$3");         // C
-        setStringReference(row, 4,  sc + "$C$4");         // D
-        setStringReference(row, 5,  sc + "$G$4");                 // E
-        setFormula(row, 6,  sc + "$J$4");                 // F
-        setFormula(row, 7,  sc + "$L$4");                 // G
-        setFormula(row, 8,  sc + "$J$5");                 // H
+        BigDecimal additionalOperationPrice =
+                getExternalAdditionalOperations(ref).stream()
+                        .map(this::getOperationSellingPrice)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        setFormula(row, 9,  sc + "$C$25");                // I
-        setFormula(row, 10, sc + "$D$25");                // J
-        setFormula(row, 11, "I" + rowNum + "-J" + rowNum);// K
+        return rawMaterialPrice
+                .add(sumOperationSetupCost(ref.getOperations()))
+                .add(sumOperationProductionCost(ref.getOperations()))
+                .add(sumTreatmentPrice(ref.getTreatments()))
+                .add(sumTreatmentSilverCost(ref.getTreatments()))
+                .add(additionalOperationPrice)
+                .add(sumComponentPrices(ref.getComponents()))
+                .add(sumToolingPrices(ref.getTooling()))
+                .add(findOtherCostPrice(
+                        ref.getOtherCosts(),
+                        "PACK"
+                ))
+                .add(findOtherCostPrice(
+                        ref.getOtherCosts(),
+                        "TRAS"
+                ));
+    }
+    
+    private String buildComponentsDescription(
+            List<ComponentsExportModel> components
+    ) {
+        String description = safeList(components).stream()
+                .filter(Objects::nonNull)
+                .map(ComponentsExportModel::getComponentName)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(name -> !name.isEmpty())
+                .collect(Collectors.joining("/"));
 
-        setFormula(row, 12, sc + "$A$24");                // L
-        setStringReference(row, 13, sc + "$B$24");        // M
-        setFormula(row, 14, sc + "$M$24");                // N Base Price €/Kg
-        setFormula(row, 15, sc + "$G$24");                // O
-        setFormula(row, 16, sc + "$J$25");                // P
+        return description.isEmpty() ? null : description;
+    }
+    
+    private BigDecimal getOperationSellingPrice(
+            OperationsExportModel operation
+    ) {
+        if (operation == null) {
+            return BigDecimal.ZERO;
+        }
 
-        setFormula(row, 17, sc + "$L$38");                // Q
-        setFormula(row, 18, sc + "$M$38");                // R
-        setFormula(row, 19, sc + "$J$42");                // S
-        setFormula(row, 20, sc + "$M$42");                // T
-        setFormula(row, 21, sc + "$I$42");                // U
+        BigDecimal setupPrice =
+                operation.getSetupPrice() != null
+                        ? operation.getSetupPrice()
+                        : BigDecimal.ZERO;
 
-        set(row, 22, "Operations");                       // V
+        BigDecimal productionPrice =
+                operation.getProdPrice() != null
+                        ? operation.getProdPrice()
+                        : BigDecimal.ZERO;
 
-        setFormula(row, 23, sc + "$M$39");                // W
-        setFormula(row, 24, sc + "$B$15");                // X
-        setFormula(row, 25, sc + "$G$21");                // Y
-        setFormula(row, 26, sc + "$E$47");                // Z
-        setFormula(row, 27, sc + "$E$46");                // AA
-        setPriceFormula(row);                             // AB
-        setFormula(row, 29, sc + "$G$13");				  // AC
-        
-        // AD
-        CellStyle dateStyleAD = sheet.getRow(11).getCell(29).getCellStyle(); 
-        setFormulaKeepingStyle(row, 30, sc + "$C$5",  dateStyleAD);
-        
-        // AE
-        CellStyle dateStyleAE = sheet.getRow(11).getCell(30).getCellStyle(); 
-        setFormulaKeepingStyle(row, 31, sc + "$G$5", dateStyleAE);
+        return setupPrice.add(productionPrice);
+    }
+    
+    private void setDateInRow(
+            Row row,
+            int col1Based,
+            LocalDate value
+    ) {
+        Cell cell = row.getCell(
+                col1Based - 1,
+                Row.MissingCellPolicy.CREATE_NULL_AS_BLANK
+        );
+
+        cell.setBlank();
+
+        if (value != null) {
+            cell.setCellValue(Date.valueOf(value));
+        }
     }
 
-    private void clearOfferSummaryRow(Sheet sheet, int rowNum) {
+    private void clearOfferSummaryRow(
+            Sheet sheet,
+            int rowNum
+    ) {
         Row row = getOrCreateRow(sheet, rowNum);
 
-        // Clear the full OFFER summary row area
-        for (int col = 1; col <= 27; col++) {
-            clear(row, col);
+        for (int col = 1; col <= 31; col++) {
+            Cell cell = row.getCell(
+                    col - 1,
+                    Row.MissingCellPolicy.CREATE_NULL_AS_BLANK
+            );
+
+            cell.setBlank();
         }
 
         row.setZeroHeight(false);
-    }
+    }   
+    
+    private void prepareAdditionalOperationColumns(
+            Sheet sheet,
+            int additionalOperationSlots
+    ) {
+        int extraSlots = additionalOperationSlots - 1;
 
-    private void clear(Row row, int col1Based) {
-        Cell cell = row.getCell(col1Based - 1);
-        if (cell == null) {
+        if (extraSlots <= 0) {
             return;
         }
 
-        // Do not delete formulas from the Excel template
-        if (cell.getCellType() == CellType.FORMULA) {
-            return;
+        int extraColumns = extraSlots * 2;
+
+        /*
+         * Current layout:
+         * W = operation description
+         * X = operation price
+         * Y onward = components, tooling, packaging...
+         *
+         * Column indexes here are zero-based:
+         * W = 22
+         * X = 23
+         * Y = 24
+         */
+        int firstColumnToMove = 24; // Y
+        int lastColumnToMove = findLastUsedColumn(sheet);
+
+        sheet.shiftColumns(
+                firstColumnToMove,
+                lastColumnToMove,
+                extraColumns
+        );
+
+        /*
+         * Copy the existing W/X operation slot into each newly
+         * created operation pair.
+         */
+        for (int slot = 1; slot < additionalOperationSlots; slot++) {
+            int targetDescriptionColumn = 22 + slot * 2;
+            int targetPriceColumn = targetDescriptionColumn + 1;
+
+            copyColumn(
+                    sheet,
+                    22,
+                    targetDescriptionColumn
+            );
+
+            copyColumn(
+                    sheet,
+                    23,
+                    targetPriceColumn
+            );
         }
-
-        cell.setBlank();
-    }
-
-    private boolean isSpecialOtherCost(OtherExportModel dto) {
-        String cdc = trim(dto.getCdc());
-        return "MP".equalsIgnoreCase(cdc) || "MACH".equalsIgnoreCase(cdc);
-    }
-
-    // ---------------- helpers ----------------
-        
-    private int findSheetIndexByName(Workbook workbook, String sheetName) {
-        for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
-            if (sheetName.equals(workbook.getSheetName(i))) {
-                return i;
-            }
-        }
-        return -1;
     }
     
-    private int findLastReferenceSheetIndex(Workbook workbook) {
-        int bestIndex = -1;
-        int bestNumber = -1;
+    private int findLastUsedColumn(Sheet sheet) {
+        int lastColumn = 0;
 
-        for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
-            String name = workbook.getSheetName(i);
-            if (name != null && name.matches("^SC\\d+$")) {
-                int number = Integer.parseInt(name.substring(2));
-                if (number > bestNumber) {
-                    bestNumber = number;
-                    bestIndex = i;
-                }
+        for (Row row : sheet) {
+            if (row != null && row.getLastCellNum() > 0) {
+                lastColumn = Math.max(
+                        lastColumn,
+                        row.getLastCellNum() - 1
+                );
             }
         }
 
-        return bestIndex;
+        return lastColumn;
+    }
+    
+    private void copyColumn(
+            Sheet sheet,
+            int sourceColumn,
+            int targetColumn
+    ) {
+        sheet.setColumnWidth(
+                targetColumn,
+                sheet.getColumnWidth(sourceColumn)
+        );
+
+        for (int rowIndex = 0;
+             rowIndex <= sheet.getLastRowNum();
+             rowIndex++) {
+
+            Row row = sheet.getRow(rowIndex);
+
+            if (row == null) {
+                continue;
+            }
+
+            Cell sourceCell = row.getCell(sourceColumn);
+            Cell targetCell = row.getCell(
+                    targetColumn,
+                    Row.MissingCellPolicy.CREATE_NULL_AS_BLANK
+            );
+
+            if (sourceCell == null) {
+                targetCell.setBlank();
+                continue;
+            }
+
+            targetCell.setCellStyle(sourceCell.getCellStyle());
+
+            switch (sourceCell.getCellType()) {
+                case STRING:
+                    targetCell.setCellValue(
+                            sourceCell.getStringCellValue()
+                    );
+                    break;
+
+                case NUMERIC:
+                    targetCell.setCellValue(
+                            sourceCell.getNumericCellValue()
+                    );
+                    break;
+
+                case BOOLEAN:
+                    targetCell.setCellValue(
+                            sourceCell.getBooleanCellValue()
+                    );
+                    break;
+
+                case FORMULA:
+                    targetCell.setCellFormula(
+                            sourceCell.getCellFormula()
+                    );
+                    break;
+
+                case ERROR:
+                    targetCell.setCellErrorValue(
+                            sourceCell.getErrorCellValue()
+                    );
+                    break;
+
+                default:
+                    targetCell.setBlank();
+                    break;
+            }
+        }
     }
 
     private String readCustomer(OfferExportModel dto) {
@@ -678,10 +915,6 @@ public class OfferExcelExportService {
 
     private <T> List<T> safeList(List<T> list) {
         return list == null ? new ArrayList<>() : list;
-    }
-
-    private String trim(String s) {
-        return s == null ? null : s.trim();
     }
 
     private Row getOrCreateRow(Sheet sheet, int rowNum1Based) {
@@ -714,53 +947,155 @@ public class OfferExcelExportService {
             cell.setCellValue(value.doubleValue());
         }
     }
-    
-    private void setFormula(Row row, int col1Based, String formula) {
-        Cell cell = row.getCell(col1Based - 1, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
-
-        if (formula.startsWith("=")) {
-            formula = formula.substring(1);
+        
+    private boolean isExternalAdditionalOperation(
+            OperationsExportModel operation
+    ) {
+        if (operation == null) {
+            return false;
         }
 
-        cell.setCellFormula(formula);
+        String type = trim(operation.getType());
+        String intExt = trim(operation.getIntExt());
+
+        return "ADD".equalsIgnoreCase(type)
+                && "E".equalsIgnoreCase(intExt);
     }
     
-    private void setFormulaKeepingStyle(Row row, int col1Based, String formula, CellStyle style) {
-        Cell cell = row.getCell(col1Based - 1, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+    private int findAdditionalOperationSlotCount(
+            List<ReferenceExportModel> references
+    ) {
+        int maxOperations = safeList(references).stream()
+                .filter(Objects::nonNull)
+                .mapToInt(ref ->
+                        getExternalAdditionalOperations(ref).size()
+                )
+                .max()
+                .orElse(0);
 
-        if (style != null) {
-            cell.setCellStyle(style);
+        // Always keep at least one empty slot
+        return Math.max(1, maxOperations);
+    }
+    
+    private String trim(String s) {
+        return s == null ? null : s.trim();
+    }
+    
+    private List<OperationsExportModel> getExternalAdditionalOperations(
+            ReferenceExportModel ref
+    ) {
+        if (ref == null) {
+            return List.of();
         }
 
-        if (formula.startsWith("=")) {
-            formula = formula.substring(1);
+        return safeList(ref.getOperations()).stream()
+                .filter(this::isExternalAdditionalOperation)
+                .toList();
+    }
+        
+    private RMExportModel getFirstRawMaterial(ReferenceExportModel ref) {
+        if (ref == null || ref.getRawMaterials() == null) {
+            return null;
         }
 
-        cell.setCellFormula(formula);
+        return ref.getRawMaterials().stream()
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(null);
+    }
+        
+    private BigDecimal findOtherCostPrice(
+            List<OtherExportModel> otherCosts,
+            String cdc
+    ) {
+        return safeList(otherCosts).stream()
+                .filter(Objects::nonNull)
+                .filter(cost ->
+                        cost.getCdc() != null
+                        && cost.getCdc().trim().equalsIgnoreCase(cdc)
+                )
+                .map(OtherExportModel::getPrice)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
     
-    private void setPriceFormula(Row row) {
-        int r = row.getRowNum() + 1;
+    private BigDecimal sumTreatmentSilverQuantity(
+            List<TreatmentsExportModel> treatments
+    ) {
+        return safeList(treatments).stream()
+                .filter(Objects::nonNull)
+                .map(TreatmentsExportModel::getSilverQuantityGr)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
 
-        setFormula(
-            row,
-            28, // AB
-            String.format(
-                "SUM(P%d:R%d)+SUM(T%d:U%d)+W%d+Y%d+Z%d+AA%d",
-                r, r,
-                r, r,
-                r, r, r, r
-            )
-        );
+    private BigDecimal sumTreatmentPrice(
+            List<TreatmentsExportModel> treatments
+    ) {
+        return safeList(treatments).stream()
+                .filter(Objects::nonNull)
+                .map(TreatmentsExportModel::getOperationPrice)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private BigDecimal sumTreatmentSilverCost(
+            List<TreatmentsExportModel> treatments
+    ) {
+        return safeList(treatments).stream()
+                .filter(Objects::nonNull)
+                .map(TreatmentsExportModel::getSilverCost)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
     
-    private void setStringReference(Row row, int col1Based, String reference) {
-        setFormula(
-            row,
-            col1Based,
-            "IF(" + reference + "=\"\",\"\","
-                + reference + ")"
-        );
+    private BigDecimal sumOperationSetupCost(
+            List<OperationsExportModel> operations
+    ) {
+        return safeList(operations).stream()
+                .filter(Objects::nonNull)
+                .filter(operation ->
+                        !isExternalAdditionalOperation(operation)
+                )
+                .map(OperationsExportModel::getSetupCost)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+    private BigDecimal sumOperationProductionCost(
+            List<OperationsExportModel> operations
+    ) {
+        return safeList(operations).stream()
+                .filter(Objects::nonNull)
+                .filter(operation ->
+                        !isExternalAdditionalOperation(operation)
+                )
+                .map(OperationsExportModel::getProdCost)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }    
+    
+    private BigDecimal sumComponentPrices(List<ComponentsExportModel> components) {
+        return safeList(components).stream()
+                .filter(Objects::nonNull)
+                .map(ComponentsExportModel::getPrice)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private BigDecimal sumToolingPrices(List<ToolingExportModel> tooling) {
+        return safeList(tooling).stream()
+                .filter(Objects::nonNull)
+                .map(ToolingExportModel::getPrice)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private BigDecimal sumToolingCosts(List<ToolingExportModel> tooling) {
+        return safeList(tooling).stream()
+                .filter(Objects::nonNull)
+                .map(ToolingExportModel::getCost)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private void setDate(Sheet sheet, String ref, LocalDate value) {
@@ -787,45 +1122,6 @@ public class OfferExcelExportService {
             cell.setBlank();
         } else {
             cell.setCellValue(value.doubleValue());
-        }
-    }
-    
-    // Helper: hide unused rows
-    private <T> void fillVariableTable(
-            Sheet sheet,
-            List<T> rows,
-            int startRow,
-            int templateRows,
-            boolean keepFirstTemplateRowWhenEmpty,
-            BiConsumer<Row, T> fillRow,
-            Consumer<Row> clearDataCells
-    ) {
-        if (rows == null) {
-            rows = List.of();
-        }
-
-        int rowsToKeep = keepFirstTemplateRowWhenEmpty
-                ? Math.max(1, rows.size())
-                : rows.size();
-
-        for (int i = 0; i < rowsToKeep; i++) {
-            Row row = getOrCreateRow(sheet, startRow + i);
-            row.setZeroHeight(false);
-
-            T dto = i < rows.size() ? rows.get(i) : null;
-
-            if (i == 0 && dto == null && keepFirstTemplateRowWhenEmpty) {
-                continue;
-            }
-
-            fillRow.accept(row, dto);
-        }
-
-        for (int i = rowsToKeep; i < templateRows; i++) {
-            Row row = getOrCreateRow(sheet, startRow + i);
-            
-            clearDataCells.accept(row);
-            row.setZeroHeight(true);
         }
     }
 }
