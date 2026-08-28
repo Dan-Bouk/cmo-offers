@@ -167,7 +167,7 @@ public class HomePage extends BorderPane {
         try {
             Image logo = new Image(
                     getClass().getResourceAsStream(
-                            "/CMO_SPA_logo_White.png"
+                            "/Aris_logo.png"
                     )
             );
             logoView.setImage(logo);
