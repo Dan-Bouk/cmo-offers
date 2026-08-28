@@ -28,7 +28,7 @@ public class MainApp extends Application {
                         .toExternalForm()
         );
 
-        stage.setTitle("ARIS - CMO Offers App");
+        stage.setTitle("ARIS Offers");
         stage.setScene(scene);
         stage.show();
     }
